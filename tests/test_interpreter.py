@@ -81,5 +81,87 @@ class ControleTest(unittest.TestCase):
         self.assertEqual(run(src), 10)
 
 
+class FuncoesTest(unittest.TestCase):
+    def test_funcao_simples(self):
+        self.assertEqual(run("fn soma(a, b) { return a + b; } soma(2, 3);"), 5)
+
+    def test_sem_return_devolve_nil(self):
+        self.assertIsNone(run("fn f() { 1; } f();"))
+
+    def test_recursao(self):
+        src = "fn fib(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); } fib(15);"
+        self.assertEqual(run(src), 610)
+
+    def test_return_dentro_do_while(self):
+        src = """
+        fn primeiroMaiorQue(lim) {
+            let i = 0;
+            while (true) { if (i * i > lim) { return i; } i = i + 1; }
+        }
+        primeiroMaiorQue(50);
+        """
+        self.assertEqual(run(src), 8)
+
+    def test_closure_contador(self):
+        src = """
+        fn contador() {
+            let n = 0;
+            return fn() { n = n + 1; return n; };
+        }
+        let c = contador();
+        c(); c();
+        c();
+        """
+        self.assertEqual(run(src), 3)
+
+    def test_closures_independentes(self):
+        src = """
+        fn somador(x) { return fn(y) { return x + y; }; }
+        let mais10 = somador(10);
+        let mais1 = somador(1);
+        mais10(5) + mais1(5);
+        """
+        self.assertEqual(run(src), 21)
+
+    def test_funcao_como_argumento(self):
+        src = "fn aplica(f, v) { return f(v); } aplica(fn(x) { return x * 2; }, 21);"
+        self.assertEqual(run(src), 42)
+
+    def test_aridade_errada(self):
+        with self.assertRaises(RuntimeErr):
+            run("fn f(a) { return a; } f(1, 2);")
+
+    def test_chamar_nao_funcao(self):
+        with self.assertRaises(RuntimeErr):
+            run("let x = 1; x();")
+
+    def test_recursao_infinita(self):
+        with self.assertRaises(RuntimeErr):
+            run("fn f() { return f(); } f();")
+
+    def test_return_fora_de_funcao(self):
+        with self.assertRaises(RuntimeErr):
+            run("return 1;")
+
+
+class BuiltinsTest(unittest.TestCase):
+    def test_print(self):
+        saida = []
+        Interpreter(output=saida.append).run('print("x =", 1, true, nil);')
+        self.assertEqual(saida, ["x = 1 true nil"])
+
+    def test_conversoes(self):
+        self.assertEqual(run('str(10) + "!";'), "10!")
+        self.assertEqual(run('num("3") + 1;'), 4)
+        self.assertEqual(run('num("2.5");'), 2.5)
+        self.assertEqual(run('len("ufscar");'), 6)
+        self.assertEqual(run("type(fn() {});"), "function")
+
+    def test_erro_de_builtin_tem_linha(self):
+        with self.assertRaises(RuntimeErr) as ctx:
+            run('\n\nnum("abc");')
+        self.assertEqual(ctx.exception.line, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

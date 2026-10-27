@@ -36,6 +36,55 @@ class Environment:
         env.vars[name] = value
 
 
+class ReturnSignal(Exception):
+    """Usado para 'pular' do meio do corpo da função até quem chamou."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class Function:
+    """Função definida pelo usuário. Guarda o ambiente onde foi criada (closure)."""
+
+    def __init__(self, decl, closure):
+        self.decl = decl
+        self.closure = closure
+
+    def arity(self):
+        return len(self.decl.params)
+
+    def call(self, interp, args):
+        env = Environment(self.closure)
+        for name, value in zip(self.decl.params, args):
+            env.define(name, value)
+        try:
+            interp.execute_block(self.decl.body, env)
+        except ReturnSignal as ret:
+            return ret.value
+        return None
+
+    def __str__(self):
+        return f"<fn {self.decl.name}>"
+
+
+class Builtin:
+    """Função nativa, implementada em Python."""
+
+    def __init__(self, name, arity, fn):
+        self.name = name
+        self._arity = arity  # None = aceita qualquer quantidade
+        self.fn = fn
+
+    def arity(self):
+        return self._arity
+
+    def call(self, interp, args):
+        return self.fn(*args)
+
+    def __str__(self):
+        return f"<builtin {self.name}>"
+
+
 # ---------- helpers de tipo ----------
 
 def is_number(v):
@@ -79,12 +128,46 @@ class Interpreter:
     def __init__(self, output=print):
         self.output = output
         self.globals = Environment()
+        self.define_builtins()
+
+    def define_builtins(self):
+        def _print(*args):
+            self.output(" ".join(stringify(a) for a in args))
+
+        def _len(s):
+            if not isinstance(s, str):
+                raise RuntimeErr(f"len() espera string, recebeu {type_name(s)}")
+            return len(s)
+
+        def _num(s):
+            try:
+                return int(s)
+            except (TypeError, ValueError):
+                try:
+                    return float(s)
+                except (TypeError, ValueError):
+                    raise RuntimeErr(f"não consegui converter {stringify(s)!r} para número")
+
+        for b in (
+            Builtin("print", None, _print),
+            Builtin("len", 1, _len),
+            Builtin("str", 1, stringify),
+            Builtin("num", 1, _num),
+            Builtin("type", 1, type_name),
+            Builtin("input", None, lambda *p: input(*(stringify(x) for x in p))),
+        ):
+            self.globals.define(b.name, b)
 
     def run(self, source):
         program = parse(source)
         result = None
-        for stmt in program:
-            result = self.execute(stmt, self.globals)
+        try:
+            for stmt in program:
+                result = self.execute(stmt, self.globals)
+        except RecursionError:
+            raise RuntimeErr("estouro de pilha (recursão infinita?)") from None
+        except ReturnSignal:
+            raise RuntimeErr("'return' fora de função") from None
         return result
 
     # ---------- comandos ----------
@@ -108,6 +191,9 @@ class Interpreter:
             while truthy(self.evaluate(node.cond, env)):
                 self.execute(node.body, env)
             return None
+        if isinstance(node, ast.Return):
+            value = None if node.value is None else self.evaluate(node.value, env)
+            raise ReturnSignal(value)
         raise RuntimeErr(f"comando desconhecido: {type(node).__name__}", node.line)
 
     def execute_block(self, statements, env):
@@ -137,7 +223,29 @@ class Interpreter:
             return self.evaluate(node.right, env)
         if isinstance(node, ast.Binary):
             return self.binary(node, env)
+        if isinstance(node, ast.FunctionExpr):
+            return Function(node, env)
+        if isinstance(node, ast.Call):
+            return self.call(node, env)
         raise RuntimeErr(f"expressão desconhecida: {type(node).__name__}", node.line)
+
+    def call(self, node, env):
+        callee = self.evaluate(node.callee, env)
+        args = [self.evaluate(a, env) for a in node.args]
+        if not isinstance(callee, (Function, Builtin)):
+            raise RuntimeErr(f"{type_name(callee)} não é uma função", node.line)
+        expected = callee.arity()
+        if expected is not None and expected != len(args):
+            raise RuntimeErr(
+                f"{callee} espera {expected} argumento(s), recebeu {len(args)}", node.line
+            )
+        try:
+            return callee.call(self, args)
+        except RuntimeErr as e:
+            # builtins não sabem a linha, então completa aqui
+            if e.line is None:
+                raise RuntimeErr(e.message, node.line) from None
+            raise
 
     def unary(self, node, env):
         value = self.evaluate(node.operand, env)
